@@ -1,0 +1,47 @@
+{
+  "name": "multi-sql-deployer",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && electron-builder",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "electron-store": "^11.0.2",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.9.0",
+    "mssql": "^12.5.0",
+    "mysql2": "^3.22.2",
+    "pg": "^8.20.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "sql-formatter": "^15.7.3",
+    "tedious": "^19.2.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.12.2",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.58.2",
+    "vite": "^8.0.10",
+    "vite-plugin-electron": "^0.29.1",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  }
+}

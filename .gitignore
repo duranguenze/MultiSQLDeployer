@@ -1,0 +1,30 @@
+# Build outputs
+dist
+dist-ssr
+dist-electron
+out
+release
+
+# Dependencies
+node_modules
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDEs
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs
+logs
+*.log
+npm-debug.log*
