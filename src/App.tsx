@@ -6,6 +6,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   ShieldOff,
+  ShieldEllipsis,
   Settings,
   Terminal,
   Layers,
@@ -52,10 +53,11 @@ const DataGrid = ({ data, columns = [], onExport }: { data: any[], columns: stri
     }
   }, [columns]);
 
-  const totalPages = Math.ceil(data.length / rowsPerPage);
+  const safeData = data || [];
+  const totalPages = Math.ceil(safeData.length / rowsPerPage);
   const indexOfLastRow = currentPage * rowsPerPage;
   const indexOfFirstRow = indexOfLastRow - rowsPerPage;
-  const currentRows = data.slice(indexOfFirstRow, indexOfLastRow);
+  const currentRows = safeData.slice(indexOfFirstRow, indexOfLastRow);
 
   const moveColumn = (fromIndex: number, toIndex: number) => {
     const newOrder = [...columnOrder];
@@ -64,7 +66,7 @@ const DataGrid = ({ data, columns = [], onExport }: { data: any[], columns: stri
     setColumnOrder(newOrder);
   };
 
-  if (data.length === 0) return (
+  if (safeData.length === 0) return (
     <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-3">
       <Terminal size={40} strokeWidth={1} />
       <p className="text-sm font-medium">No hay datos para mostrar</p>
@@ -86,7 +88,7 @@ const DataGrid = ({ data, columns = [], onExport }: { data: any[], columns: stri
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <span style={{ fontSize: '9px', fontWeight: 900, color: '#94a3b8', textTransform: 'uppercase' }}>Resultados</span>
           <span style={{ fontSize: '12px', fontWeight: 700, color: '#1e293b' }}>
-            {indexOfFirstRow + 1}-{Math.min(indexOfLastRow, data.length)} <span style={{ color: '#94a3b8', fontWeight: 400 }}>de</span> {data.length}
+            {indexOfFirstRow + 1}-{Math.min(indexOfLastRow, safeData.length)} <span style={{ color: '#94a3b8', fontWeight: 400 }}>de</span> {safeData.length}
           </span>
         </div>
         <div style={{ width: '1px', height: '16px', background: '#e2e8f0' }} />
@@ -149,11 +151,115 @@ const DataGrid = ({ data, columns = [], onExport }: { data: any[], columns: stri
   );
 };
 
+// Helper to ensure objects are serializable for IPC (Nuclear version)
+const cleanForIpc = (obj: any) => {
+  try {
+    return JSON.parse(JSON.stringify(obj, (key, value) => {
+      if (typeof value === 'bigint') return value.toString();
+      // Block common circular/DOM/Browser objects
+      if (value && typeof value === 'object') {
+        if (value instanceof Node || value instanceof Window || value.constructor?.name?.includes('Element') || value.constructor?.name === 'Window') {
+          return undefined;
+        }
+      }
+      return value;
+    }));
+  } catch (err) {
+    console.warn("IPC Cleanup warning:", err);
+    return {};
+  }
+};
+
 const ENVIRONMENTS_DEFAULT = [
   { id: 'dev', name: 'Desarrollo', color: '#ffffff', icon: '💻' },
   { id: 'test', name: 'Pruebas', color: '#f97316', icon: '🧪' },
   { id: 'prod', name: 'Productivo', color: '#ef4444', icon: '🔥' },
 ];
+
+// --- Generator UI Sub-component to stabilize inputs ---
+const GeneratorUI = ({ servers, onGenerate }: any) => {
+  const [genTable, setGenTable] = useState('')
+  const [genColumns, setGenColumns] = useState<any[]>([])
+  const [selectedGenSrv, setSelectedGenSrv] = useState<any>(null)
+  const [selectedGenDb, setSelectedGenDb] = useState('')
+  const [newColName, setNewColName] = useState('')
+  const [newColType, setNewColType] = useState('VARCHAR(100)')
+  const [selectedSampleCol, setSelectedSampleCol] = useState('')
+
+  return (
+    <div style={{padding:'1.5rem', display:'flex', flexDirection:'column', gap:'1rem'}}>
+      <div className="panel-header" style={{padding:0, border:0}}><span className="panel-title">ALTER SMART</span></div>
+      
+      <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
+        <label style={{fontSize:'9px', fontWeight:900, color:'#64748b'}}>SERVIDOR & DB</label>
+        <select className="settings-input" style={{fontSize:'11px'}} onChange={(e) => {
+          const [sId, db] = e.target.value.split('|');
+          setSelectedGenSrv(servers.find((s:any) => s.id === sId));
+          setSelectedGenDb(db);
+        }}>
+          <option value="">Selecciona...</option>
+          {servers.flatMap((s:any) => s.dbs.map((db:string) => <option key={`${s.id}|${db}`} value={`${s.id}|${db}`}>{s.name} - {db}</option>))}
+        </select>
+      </div>
+
+      <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
+        <label style={{fontSize:'9px', fontWeight:900, color:'#64748b'}}>TABLA</label>
+        <div style={{display:'flex', gap:'5px'}}>
+          <input className="settings-input" style={{flex:1, fontSize:'11px'}} value={genTable} onChange={(e) => setGenTable(e.target.value)} placeholder="Nombre de tabla..."/>
+          <button className="toolbar-btn" onClick={async () => {
+            if (!selectedGenSrv || !selectedGenDb || !genTable) return alert("Faltan datos");
+            const res = await getIpc().invoke('get-columns', cleanForIpc({ 
+            config: { user: selectedGenSrv.user, password: selectedGenSrv.password, server: selectedGenSrv.host, database: selectedGenDb, port: selectedGenSrv.port }, 
+            table: genTable, 
+            engine: selectedGenSrv.engine 
+          }));
+            if (res.success) setGenColumns(res.columns); else alert(res.error);
+          }}><RotateCw size={14}/></button>
+        </div>
+      </div>
+
+      {genColumns.length > 0 && (
+        <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
+          <label style={{fontSize:'9px', fontWeight:900, color:'#64748b'}}>COLUMNA MUESTRA (COPIAR DATOS)</label>
+          <select className="settings-input" style={{fontSize:'11px'}} value={selectedSampleCol} onChange={(e) => {
+            const colName = e.target.value;
+            setSelectedSampleCol(colName);
+            const col = genColumns.find(c => c.name === colName);
+            if (col) setNewColType(col.type + (col.length && col.length !== -1 ? `(${col.length})` : ''));
+          }}>
+            <option value="">Ninguna (Solo crear)</option>
+            {genColumns.map(c => <option key={c.name} value={c.name}>{c.name} ({c.type})</option>)}
+          </select>
+        </div>
+      )}
+
+      <div style={{marginTop:'1rem', padding:'1rem', background:'rgba(255,255,255,0.02)', borderRadius:'10px', border:'1px solid var(--panel-border)'}}>
+        <label style={{fontSize:'10px', fontWeight:900, color:'var(--accent-primary)', marginBottom:'10px', display:'block'}}>NUEVA COLUMNA</label>
+        <input className="settings-input" style={{width:'100%', marginBottom:'10px'}} placeholder="Nombre..." value={newColName} onChange={(e)=>setNewColName(e.target.value)}/>
+        <input className="settings-input" style={{width:'100%', marginBottom:'15px'}} placeholder="Tipo (ej: VARCHAR(100))" value={newColType} onChange={(e)=>setNewColType(e.target.value)}/>
+        
+        <button className="btn btn-primary" style={{width:'100%'}} onClick={() => {
+          if (!newColName) return;
+          const engine = selectedGenSrv?.engine || 'mssql';
+          let script = '';
+          const updateSnippet = selectedSampleCol ? `\n\n-- Migración de datos\nUPDATE ${genTable} SET ${newColName} = ${selectedSampleCol};` : '';
+          
+          if (engine === 'mssql') {
+            const upSql = selectedSampleCol ? `\n    EXEC('UPDATE ${genTable} SET ${newColName} = ${selectedSampleCol}');` : '';
+            script = `IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('${genTable}') AND name = '${newColName}')\nBEGIN\n    ALTER TABLE ${genTable} ADD ${newColName} ${newColType};${upSql}\n    PRINT 'Columna ${newColName} agregada correctamente';\nEND`;
+          } else if (engine === 'postgres') {
+            script = `ALTER TABLE ${genTable} ADD COLUMN IF NOT EXISTS ${newColName} ${newColType};${updateSnippet}`;
+          } else {
+            // MySQL Idempotent
+            const upMy = selectedSampleCol ? `\n    SET @upd = CONCAT('UPDATE ', @tablename, ' SET ', @columnname, ' = ${selectedSampleCol}');\n    PREPARE stmtUp FROM @upd; EXECUTE stmtUp; DEALLOCATE PREPARE stmtUp;` : '';
+            script = `-- MySQL Idempotent Add\nSET @dbname = DATABASE();\nSET @tablename = '${genTable}';\nSET @columnname = '${newColName}';\nSET @preparedStatement = (SELECT IF(\n    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = @dbname AND TABLE_NAME = @tablename AND COLUMN_NAME = @columnname) > 0,\n    'SELECT 1',\n    CONCAT('ALTER TABLE ', @tablename, ' ADD ', @columnname, ' ${newColType}')\n));\nPREPARE stmt FROM @preparedStatement;\nEXECUTE stmt;\nDEALLOCATE PREPARE stmt;${upMy}`;
+          }
+          onGenerate(script);
+        }}>Generar & Cargar</button>
+      </div>
+    </div>
+  )
+}
 
 function App() {
   const urlParams = new URLSearchParams(window.location.search);
@@ -167,29 +273,109 @@ function App() {
   const [executing, setExecuting] = useState(false)
   const [servers, setServers] = useState<any[]>([])
   const [environments, setEnvironments] = useState<any[]>(ENVIRONMENTS_DEFAULT)
+  const [serverStatus, setServerStatus] = useState<Record<string, 'online' | 'offline' | 'checking'>>({})
   const [showSettings, setShowSettings] = useState(false)
   const [schemaTables, setSchemaTables] = useState<string[]>([])
   const [isRefreshingSchema, setIsRefreshingSchema] = useState(false)
   const [selectedResultIndex, setSelectedResultIndex] = useState(0)
   const [consoleHeight, setConsoleHeight] = useState(300)
   const editorRef = useRef<any>(null)
+  const monacoRef = useRef<any>(null)
   const [snapshotModeData, setSnapshotModeData] = useState<any>(null)
   const [isLoadingSnapshot, setIsLoadingSnapshot] = useState(isSnapshot)
   const [currentFilePath, setCurrentFilePath] = useState<string | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([])
   const [collapsedServers, setCollapsedServers] = useState<string[]>([])
+  const [sidebarTab, setSidebarTab] = useState<'destinations' | 'generator'>('destinations')
 
   useEffect(() => {
     const loadConfig = async () => {
       const savedServers = await getIpc().invoke('get-config', 'servers');
-      setServers(savedServers || []);
+      const finalServers = savedServers || [];
+      setServers(finalServers);
       const savedEnvs = await getIpc().invoke('get-config', 'environments');
       if (savedEnvs) setEnvironments(savedEnvs);
       const cachedSchema = await getIpc().invoke('get-config', 'cachedSchema');
       if (cachedSchema) setSchemaTables(cachedSchema);
+
+      finalServers.forEach((s: any) => checkSrvConn(s));
     };
     loadConfig();
+
+    let pulses = 0;
+    const pulseInterval = setInterval(() => {
+      if (editorRef.current) {
+        editorRef.current.layout();
+        if (monacoRef.current) {
+          monacoRef.current.editor.remeasureFonts();
+        }
+      }
+      pulses++;
+      if (pulses > 10) clearInterval(pulseInterval);
+    }, 500);
+
+    const handleResizeWindow = () => {
+      if (editorRef.current) editorRef.current.layout();
+    };
+    window.addEventListener('resize', handleResizeWindow);
+
+    return () => {
+      clearInterval(pulseInterval);
+      window.removeEventListener('resize', handleResizeWindow);
+    };
   }, []);
+
+  useEffect(() => {
+    if (monacoRef.current) {
+      const monaco = monacoRef.current;
+      const provider = monaco.languages.registerCompletionItemProvider('sql', {
+        provideCompletionItems: (model: any, position: any) => {
+          const word = model.getWordUntilPosition(position);
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: word.startColumn,
+            endColumn: word.endColumn
+          };
+
+          const tables = (window as any)._schemaTables || [];
+          const suggestions = tables.map((table: string) => ({
+            label: table,
+            kind: monaco.languages.CompletionItemKind.Field,
+            insertText: table,
+            range: range,
+            detail: 'Tabla de Base de Datos'
+          }));
+
+          const keywords = ['SELECT', 'FROM', 'WHERE', 'UPDATE', 'DELETE', 'INSERT', 'INTO', 'VALUES', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'GROUP BY', 'ORDER BY', 'HAVING'];
+          keywords.forEach(kw => {
+            suggestions.push({
+              label: kw,
+              kind: monaco.languages.CompletionItemKind.Keyword,
+              insertText: kw,
+              range: range
+            });
+          });
+
+          return { suggestions };
+        }
+      });
+
+      return () => provider.dispose();
+    }
+  }, [monacoRef.current]);
+
+  useEffect(() => {
+    if (editorRef.current) {
+      setTimeout(() => editorRef.current.layout(), 50);
+    }
+  }, [sidebarTab]);
+
+  const checkSrvConn = async (srv: any) => {
+    setServerStatus(prev => ({ ...prev, [srv.id]: 'checking' }));
+    const res = await getIpc().invoke('check-connection', { host: srv.host, engine: srv.engine });
+    setServerStatus(prev => ({ ...prev, [srv.id]: res.online ? 'online' : 'offline' }));
+  };
 
   useEffect(() => {
     if (isSnapshot && snapId) {
@@ -243,6 +429,10 @@ function App() {
       setSqlQuery(formatted);
     } catch (err) { console.error(err); }
   }
+  const handleCheckSyntax = () => {
+    runDeployment(true);
+  }
+
   const handleOpenFile = async () => {
     const res = await getIpc().invoke('open-file-dialog');
     if (res?.content) { setSqlQuery(res.content); setCurrentFilePath(res.filePath); }
@@ -251,7 +441,9 @@ function App() {
     const res = await getIpc().invoke('save-file-dialog', { content: sqlQuery, filePath: saveAs ? null : currentFilePath });
     if (res?.success) setCurrentFilePath(res.filePath);
   }
+
   const handleExportExcel = (result: any) => {
+    if (!result.data || result.data.length === 0) return;
     const ws = XLSX.utils.json_to_sheet(result.data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Resultados");
@@ -270,17 +462,54 @@ function App() {
     setIsRefreshingSchema(false);
   }
 
-  const runDeployment = async () => {
+  const runDeployment = async (checkSyntax = false) => {
     if (selectedDestinations.length === 0) return;
     setExecuting(true); setResults([]);
     for (const destId of selectedDestinations) {
       const [srvId, dbName] = destId.split('|');
       const srv = servers.find(s => s.id === srvId);
       if (!srv) continue;
-      const res = await getIpc().invoke('execute-sql', { config: { user: srv.user, password: srv.password, server: srv.host, database: dbName }, query: sqlQuery, isDryRun, engine: srv.engine });
-      setResults(prev => [...prev, { id: destId, server: srv.name, db: dbName, status: res.success ? 'success' : 'error', message: res.success ? 'Ejecución exitosa' : res.error, data: res.data, columns: res.columns }]);
+
+      if (serverStatus[srv.id] === 'offline') {
+        setResults(prev => [...prev, { 
+          id: destId, 
+          server: srv.name, 
+          db: dbName, 
+          status: 'error', 
+          message: 'Omitido: El servidor no responde (Offline)', 
+          data: [], 
+          columns: [] 
+        }]);
+        continue;
+      }
+
+      const res = await getIpc().invoke('execute-sql', cleanForIpc({ 
+        config: { 
+          user: srv.user, 
+          password: srv.password, 
+          server: srv.host, 
+          database: dbName, 
+          port: srv.port 
+        }, 
+        query: sqlQuery, 
+        isDryRun, 
+        engine: srv.engine,
+        checkSyntax: !!checkSyntax 
+      }));
+      setResults(prev => [...prev, { 
+        id: destId, 
+        server: srv.name, 
+        db: dbName, 
+        mode: checkSyntax ? 'SYNTAX' : (isDryRun ? 'DRYRUN' : 'REAL'),
+        status: res.success ? 'success' : 'error', 
+        message: res.success ? (checkSyntax ? res.message : res.message || 'Ejecución exitosa') : res.error, 
+        data: res.data || [], 
+        columns: res.columns || [] 
+      }]);
     }
-    setExecuting(false); if (!isDryRun) setIsDryRun(true);
+    setExecuting(false); 
+    setIsDryRun(true); // Always revert to safe mode
+    setSelectedResultIndex(0); // View first result by default
   }
 
   const handleResize = (e: React.MouseEvent) => {
@@ -298,79 +527,97 @@ function App() {
     <div className="app-container">
       {/* Sidebar Jerárquico Premium */}
       <aside className="sidebar">
-        <div className="panel-header">
-          <span className="panel-title">Destinos</span>
-          <div style={{display:'flex', gap:'8px'}}>
-            <Filter size={14} className="text-secondary"/>
-            <Settings size={16} onClick={() => setShowSettings(true)} style={{cursor:'pointer'}} className="text-secondary hover:text-white transition-colors"/>
-          </div>
+        <div style={{display:'flex', background:'rgba(255,255,255,0.03)', borderBottom:'1px solid var(--panel-border)'}}>
+           <button onClick={() => setSidebarTab('destinations')} style={{flex:1, padding:'10px', background: sidebarTab === 'destinations' ? 'rgba(0,242,255,0.1)' : 'transparent', border:'none', color: sidebarTab === 'destinations' ? 'var(--accent-primary)' : '#64748b', fontSize:'10px', fontWeight:900, cursor:'pointer'}}>DESTINOS</button>
+           <button onClick={() => setSidebarTab('generator')} style={{flex:1, padding:'10px', background: sidebarTab === 'generator' ? 'rgba(0,242,255,0.1)' : 'transparent', border:'none', color: sidebarTab === 'generator' ? 'var(--accent-primary)' : '#64748b', fontSize:'10px', fontWeight:900, cursor:'pointer'}}>GENERADOR</button>
         </div>
-        <div style={{padding:'0.5rem', overflowY:'auto'}}>
-          {environments.map(env => {
-            const grpServers = servers.filter(s => s.type === env.id); 
-            if (grpServers.length === 0) return null;
-            const color = env.color;
-            const grpName = env.name;
-            const grpIcon = env.icon;
-            const grpDbs = grpServers.flatMap(s => s.dbs.map((db:string) => `${s.id}|${db}`));
-            const allSel = grpDbs.length > 0 && grpDbs.every(id => selectedDestinations.includes(id));
-            const someSel = grpDbs.some(id => selectedDestinations.includes(id)) && !allSel;
-            const isCol = collapsedGroups.includes(env.id);
-            
-            return (
-              <div key={env.id} style={{marginBottom:'1rem', borderRadius:'8px', overflow:'hidden', border:`1px solid ${allSel || someSel ? color+'33' : 'transparent'}`}}>
-                <div style={{display:'flex', alignItems:'center', padding:'8px 12px', background:'rgba(255,255,255,0.02)', cursor:'pointer'}}>
-                   <div onClick={() => toggleCollapseGroup(env.id)} style={{flex:1, display:'flex', alignItems:'center', gap:'6px'}}>
-                     {isCol ? <ChevronRight size={14}/> : <ChevronDown size={14}/>}
-                     <span style={{color, fontSize:'10px', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.05em'}}>{grpIcon} {grpName}</span>
-                   </div>
-                   <div onClick={() => toggleGroup(env.id)} style={{color}}>
-                     {allSel ? <CheckSquare size={16}/> : someSel ? <CheckSquare size={16} style={{opacity:0.5}}/> : <Square size={16} style={{opacity:0.2}}/>}
-                   </div>
-                </div>
-                {!isCol && (
-                  <div style={{padding:'4px'}}>
-                    {grpServers.map(srv => {
-                       const isSrvCol = collapsedServers.includes(srv.id);
-                       const srvDbs = srv.dbs.map((db:string) => `${srv.id}|${db}`);
-                       const allSrvSel = srvDbs.length > 0 && srvDbs.every((id:string) => selectedDestinations.includes(id));
-                       const someSrvSel = srvDbs.some(id => selectedDestinations.includes(id)) && !allSrvSel;
-                       
-                       return (
-                         <div key={srv.id} style={{marginBottom:'2px'}}>
-                            <div style={{display:'flex', alignItems:'center', padding:'6px 10px', gap:'8px', borderRadius:'6px', background:allSrvSel ? 'rgba(255,255,255,0.03)' : 'transparent'}}>
-                               <div onClick={() => toggleCollapseServer(srv.id)} style={{flex:1, display:'flex', alignItems:'center', gap:'8px', cursor:'pointer'}}>
-                                 {isSrvCol ? <ChevronRight size={12}/> : <ChevronDown size={12}/>}
-                                 <Server size={14} color={color}/>
-                                 <span style={{fontSize:'12px', fontWeight:600, color:allSrvSel ? 'white' : '#94a3b8'}}>{srv.name}</span>
-                               </div>
-                               <div onClick={() => toggleServer(srv.id)} style={{color}}>
-                                 {allSrvSel ? <CheckSquare size={14}/> : someSrvSel ? <CheckSquare size={14} style={{opacity:0.5}}/> : <Square size={14} style={{opacity:0.1}}/>}
-                               </div>
-                            </div>
-                            {!isSrvCol && (
-                              <div style={{marginLeft:'28px', marginTop:'2px', display:'flex', flexDirection:'column', gap:'1px'}}>
-                                {srv.dbs.map((db:string) => {
-                                   const dbId = `${srv.id}|${db}`; const sel = selectedDestinations.includes(dbId);
-                                   return (
-                                     <div key={db} onClick={() => toggleDestination(dbId)} style={{display:'flex', alignItems:'center', gap:'8px', padding:'4px 8px', borderRadius:'4px', cursor:'pointer', fontSize:'11px', color: sel ? 'white' : '#64748b', background: sel ? color+'11' : 'transparent'}}>
-                                       <Database size={10} style={{opacity: sel ? 1 : 0.5}}/>
-                                       <span style={{flex:1}}>{db}</span>
-                                       {sel ? <CheckSquare size={12} color={color}/> : <Square size={12} style={{opacity:0.05}}/>}
-                                     </div>
-                                   )
-                                })}
-                              </div>
-                            )}
-                         </div>
-                       )
-                    })}
-                  </div>
-                )}
+
+        {sidebarTab === 'destinations' ? (
+          <>
+            <div className="panel-header">
+              <span className="panel-title">Destinos</span>
+              <div style={{display:'flex', gap:'8px'}}>
+                <Filter size={14} className="text-secondary"/>
+                <Settings size={16} onClick={() => setShowSettings(true)} style={{cursor:'pointer'}} className="text-secondary hover:text-white transition-colors"/>
               </div>
-            )
-          })}
-        </div>
+            </div>
+            <div style={{padding:'0.5rem', overflowY:'auto'}}>
+              {environments.map(env => {
+                const grpServers = servers.filter(s => s.type === env.id); 
+                if (grpServers.length === 0) return null;
+                const color = env.color;
+                const grpName = env.name;
+                const grpIcon = env.icon;
+                const grpDbs = grpServers.flatMap(s => s.dbs.map((db:string) => `${s.id}|${db}`));
+                const allSel = grpDbs.length > 0 && grpDbs.every(id => selectedDestinations.includes(id));
+                const someSel = grpDbs.some(id => selectedDestinations.includes(id)) && !allSel;
+                const isCol = collapsedGroups.includes(env.id);
+                
+                return (
+                  <div key={env.id} style={{marginBottom:'1rem', borderRadius:'8px', overflow:'hidden', border:`1px solid ${allSel || someSel ? color+'33' : 'transparent'}`}}>
+                    <div style={{display:'flex', alignItems:'center', padding:'8px 12px', background:'rgba(255,255,255,0.02)', cursor:'pointer'}}>
+                       <div onClick={() => toggleCollapseGroup(env.id)} style={{flex:1, display:'flex', alignItems:'center', gap:'6px'}}>
+                         {isCol ? <ChevronRight size={14}/> : <ChevronDown size={14}/>}
+                         <span style={{color, fontSize:'10px', fontWeight:900, textTransform:'uppercase', letterSpacing:'0.05em'}}>{grpIcon} {grpName}</span>
+                       </div>
+                       <div onClick={() => toggleGroup(env.id)} style={{color}}>
+                         {allSel ? <CheckSquare size={16}/> : someSel ? <CheckSquare size={16} style={{opacity:0.5}}/> : <Square size={16} style={{opacity:0.2}}/>}
+                       </div>
+                    </div>
+                    {!isCol && (
+                      <div style={{padding:'4px'}}>
+                        {grpServers.map(srv => {
+                           const isSrvCol = collapsedServers.includes(srv.id);
+                           const srvDbs = srv.dbs.map((db:string) => `${srv.id}|${db}`);
+                           const allSrvSel = srvDbs.length > 0 && srvDbs.every((id:string) => selectedDestinations.includes(id));
+                           const someSrvSel = srvDbs.some(id => selectedDestinations.includes(id)) && !allSrvSel;
+                           
+                           return (
+                             <div key={srv.id} style={{marginBottom:'2px'}}>
+                                <div style={{display:'flex', alignItems:'center', padding:'6px 10px', gap:'8px', borderRadius:'6px', background:allSrvSel ? 'rgba(255,255,255,0.03)' : 'transparent'}}>
+                                   <div onClick={() => { toggleCollapseServer(srv.id); if (collapsedServers.includes(srv.id)) checkSrvConn(srv); }} style={{flex:1, display:'flex', alignItems:'center', gap:'8px', cursor:'pointer'}}>
+                                     {isSrvCol ? <ChevronRight size={12}/> : <ChevronDown size={12}/>}
+                                     <div style={{position:'relative'}}>
+                                       <Server size={14} color={color}/>
+                                       <div style={{
+                                         position:'absolute', top:-2, right:-2, width:6, height:6, borderRadius:'50%', 
+                                         background: serverStatus[srv.id] === 'online' ? '#22c55e' : serverStatus[srv.id] === 'offline' ? '#ef4444' : '#eab308',
+                                         boxShadow: serverStatus[srv.id] === 'online' ? '0 0 4px #22c55e' : 'none'
+                                       }}/>
+                                     </div>
+                                     <span style={{fontSize:'12px', fontWeight:600, color:allSrvSel ? 'white' : '#94a3b8'}}>{srv.name}</span>
+                                   </div>
+                                   <div onClick={() => toggleServer(srv.id)} style={{color}}>
+                                     {allSrvSel ? <CheckSquare size={14}/> : someSrvSel ? <CheckSquare size={14} style={{opacity:0.5}}/> : <Square size={14} style={{opacity:0.1}}/>}
+                                   </div>
+                                </div>
+                                {!isSrvCol && (
+                                  <div style={{marginLeft:'28px', marginTop:'2px', display:'flex', flexDirection:'column', gap:'1px'}}>
+                                    {srv.dbs.map((db:string) => {
+                                       const dbId = `${srv.id}|${db}`; const sel = selectedDestinations.includes(dbId);
+                                       return (
+                                         <div key={db} onClick={() => toggleDestination(dbId)} style={{display:'flex', alignItems:'center', gap:'8px', padding:'4px 8px', borderRadius:'4px', cursor:'pointer', fontSize:'11px', color: sel ? 'white' : '#64748b', background: sel ? color+'11' : 'transparent'}}>
+                                           <Database size={10} style={{opacity: sel ? 1 : 0.5}}/>
+                                           <span style={{flex:1}}>{db}</span>
+                                           {sel ? <CheckSquare size={12} color={color}/> : <Square size={12} style={{opacity:0.05}}/>}
+                                         </div>
+                                       )
+                                    })}
+                                  </div>
+                                )}
+                             </div>
+                           )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        ) : (
+          <GeneratorUI servers={servers} onGenerate={(script) => setSqlQuery(script)} />
+        )}
       </aside>
 
       <main className="main-content">
@@ -389,10 +636,13 @@ function App() {
           </div>
           <div className="toolbar-divider"/>
           <div style={{display:'flex', gap:'2px', alignItems:'center'}}>
+            <button onClick={() => runDeployment(true)} className="toolbar-btn" title="Comprobar Sintaxis (SET NOEXEC ON)" style={{color: '#8b5cf6'}}>
+              <ShieldEllipsis size={16}/>
+            </button>
             <button onClick={handleToggleDryRun} className={`toolbar-btn ${isDryRun ? 'active-warning' : 'active-danger'}`} title={isDryRun ? 'Dry Run Activado' : 'MODO REAL'}>
               {isDryRun ? <ShieldCheck size={16}/> : <ShieldOff size={16}/>}
             </button>
-            <button onClick={runDeployment} disabled={executing} className="toolbar-btn action-run" style={{position:'relative'}} title="Ejecutar en todos los destinos">
+            <button onClick={() => runDeployment(false)} disabled={executing} className="toolbar-btn action-run" style={{position:'relative'}} title="Ejecutar en todos los destinos">
               {executing ? <Zap size={16} className="animate-pulse"/> : <Play size={16}/>}
               {!isDryRun && !executing && <div style={{position:'absolute', top:6, right:6, width:6, height:6, background:'#ef4444', borderRadius:'50%', boxShadow:'0 0 5px #ef4444'}}/>}
             </button>
@@ -410,7 +660,10 @@ function App() {
             value={sqlQuery} 
             theme="vs-dark" 
             onChange={(v)=>setSqlQuery(v||'')} 
-            onMount={(e)=>editorRef.current=e} 
+            onMount={(e, m)=>{
+              editorRef.current=e;
+              monacoRef.current=m;
+            }} 
             options={{
               minimap:{enabled:true}, 
               fontSize:14, 
@@ -446,17 +699,32 @@ function App() {
               <div style={{display:'flex', gap:'2px', background:'#f1f5f9', padding:'3px', borderRadius:'10px', border:'1px solid #e2e8f0'}}>
                 {results.map((r, i) => (
                   <button 
-                    key={i} 
+                    key={r.id} 
                     onClick={() => setSelectedResultIndex(i)} 
                     style={{
-                      padding:'4px 12px', borderRadius:'7px', fontSize:'10px', border:'none', 
-                      background: selectedResultIndex === i ? 'white' : 'transparent', 
-                      color: selectedResultIndex === i ? '#1e293b' : '#64748b', 
-                      fontWeight:800, cursor:'pointer', transition:'all 0.2s',
-                      boxShadow: selectedResultIndex === i ? '0 1px 3px rgba(0,0,0,0.1)' : 'none'
+                      padding: '8px 16px',
+                      background: selectedResultIndex === i ? 'white' : 'transparent',
+                      border: 'none',
+                      borderBottom: selectedResultIndex === i ? '2px solid var(--accent-primary)' : 'none',
+                      color: selectedResultIndex === i ? 'var(--accent-primary)' : '#64748b',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      whiteSpace: 'nowrap'
                     }}
                   >
+                    <div style={{
+                      fontSize:'8px', 
+                      padding:'2px 4px', 
+                      borderRadius:'4px', 
+                      background: r.mode === 'REAL' ? '#ef4444' : r.mode === 'DRYRUN' ? '#3b82f6' : '#8b5cf6',
+                      color: 'white'
+                    }}>{r.mode}</div>
                     {r.db}
+                    {r.status === 'error' ? <XCircle size={10} color="#ef4444"/> : <CheckCircle2 size={10} color="#22c55e"/>}
                   </button>
                 ))}
               </div>
@@ -465,7 +733,7 @@ function App() {
             {results[selectedResultIndex] && (
               <div style={{display:'flex', alignItems:'center', gap:'0.75rem'}}>
                 <button 
-                  onClick={() => getIpc().invoke('open-snapshot-window', results[selectedResultIndex])} 
+                  onClick={() => getIpc().invoke('open-snapshot-window', cleanForIpc(results[selectedResultIndex]))} 
                   style={{fontSize:'10px', fontWeight:700, padding:'4px 10px', background:'white', border:'1px solid #e2e8f0', borderRadius:'6px', cursor:'pointer', display:'flex', alignItems:'center', gap:'6px', color:'#475569'}}
                 >
                   <ExternalLink size={12}/> Desacoplar

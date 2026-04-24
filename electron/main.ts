@@ -6,6 +6,7 @@ import sql from 'mssql'
 import pg from 'pg'
 import mysql from 'mysql2/promise'
 import Store from 'electron-store'
+import net from 'node:net'
 
 const store = new Store()
 
@@ -80,25 +81,49 @@ app.on('activate', () => {
 app.whenReady().then(createWindow)
 
 // SQL Implementation
-ipcMain.handle('execute-sql', async (_, { config, query, isDryRun, engine = 'mssql' }) => {
+ipcMain.handle('execute-sql', async (_, { config, query, isDryRun, engine = 'mssql', checkSyntax = false }) => {
   if (engine === 'mssql') {
     try {
-      const pool = await sql.connect(config)
+      const pool = await sql.connect({
+        ...config,
+        connectionTimeout: 5000,
+        requestTimeout: 30000,
+        options: {
+          ...config.options,
+          trustServerCertificate: true // Common for local/dev servers
+        }
+      })
+      
+      if (checkSyntax) {
+        const request = new sql.Request(pool)
+        await request.query('SET NOEXEC ON')
+        try {
+          await request.query(query)
+          await request.query('SET NOEXEC OFF')
+          return { success: true, message: 'Sintaxis y Objetos Válidos (MSSQL)' }
+        } catch (err: any) {
+          await request.query('SET NOEXEC OFF')
+          return { success: false, error: err.message }
+        }
+      }
+
       if (isDryRun) {
         const transaction = new sql.Transaction(pool)
         await transaction.begin()
         try {
-          const request = new sql.Request(transaction)
-          const result = await request.query(query)
-          await transaction.rollback()
-          return { success: true, data: result.recordset, message: 'Dry run completed (Rolled back)' }
+        const request = new sql.Request(transaction)
+        const result = await request.query(query)
+        await transaction.rollback()
+        const columns = result.recordset && result.recordset.columns ? Object.keys(result.recordset.columns) : []
+        return { success: true, data: result.recordset, columns, message: 'Dry run completed (Rolled back)' }
         } catch (err: any) {
           await transaction.rollback()
           return { success: false, error: err.message }
         }
       } else {
-        const result = await sql.query(query)
-        return { success: true, data: result.recordset }
+        const result = await pool.request().query(query)
+        const columns = result.recordset && result.recordset.columns ? Object.keys(result.recordset.columns) : []
+        return { success: true, data: result.recordset, columns, message: 'Ejecución exitosa' }
       }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -112,18 +137,25 @@ ipcMain.handle('execute-sql', async (_, { config, query, isDryRun, engine = 'mss
       database: config.database,
       password: config.password,
       port: config.port || 5432,
+      connectionTimeoutMillis: 5000,
       ssl: config.options?.encrypt ? { rejectUnauthorized: false } : false
     })
     try {
       await client.connect()
-      if (isDryRun) {
+      if (checkSyntax || isDryRun) {
         await client.query('BEGIN')
         try {
           const result = await client.query(query)
           await client.query('ROLLBACK')
-          // pg result.rows is equivalent to recordset
           const rows = Array.isArray(result) ? (result[result.length - 1]?.rows || []) : (result.rows || [])
-          return { success: true, data: rows, message: 'Dry run completed (Rolled back)' }
+          const fields = Array.isArray(result) ? (result[result.length - 1]?.fields || []) : (result.fields || [])
+          const columns = fields.map((f: any) => f.name)
+          return { 
+            success: true, 
+            data: rows, 
+            columns,
+            message: checkSyntax ? 'Sintaxis Válida (Postgres)' : 'Dry run completed (Rolled back)' 
+          }
         } catch (err: any) {
           await client.query('ROLLBACK')
           return { success: false, error: err.message }
@@ -131,7 +163,9 @@ ipcMain.handle('execute-sql', async (_, { config, query, isDryRun, engine = 'mss
       } else {
         const result = await client.query(query)
         const rows = Array.isArray(result) ? (result[result.length - 1]?.rows || []) : (result.rows || [])
-        return { success: true, data: rows }
+        const fields = Array.isArray(result) ? (result[result.length - 1]?.fields || []) : (result.fields || [])
+        const columns = fields.map((f: any) => f.name)
+        return { success: true, data: rows, columns, message: 'Ejecución exitosa' }
       }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -147,21 +181,29 @@ ipcMain.handle('execute-sql', async (_, { config, query, isDryRun, engine = 'mss
         password: config.password,
         database: config.database,
         port: config.port || 3306,
+        connectTimeout: 5000,
         ssl: config.options?.encrypt ? { rejectUnauthorized: false } : undefined
       })
-      if (isDryRun) {
+      if (checkSyntax || isDryRun) {
         await connection.beginTransaction()
         try {
-          const [rows] = await connection.execute(query)
+          const [rows, fields]: any = await connection.execute(query)
           await connection.rollback()
-          return { success: true, data: rows, message: 'Dry run completed (Rolled back)' }
+          const columns = fields ? fields.map((f: any) => f.name) : []
+          return { 
+            success: true, 
+            data: rows, 
+            columns,
+            message: checkSyntax ? 'Sintaxis Válida (MySQL)' : 'Dry run completed (Rolled back)' 
+          }
         } catch (err: any) {
           await connection.rollback()
           return { success: false, error: err.message }
         }
       } else {
-        const [rows] = await connection.execute(query)
-        return { success: true, data: rows }
+        const [rows, fields]: any = await connection.execute(query)
+        const columns = fields ? fields.map((f: any) => f.name) : []
+        return { success: true, data: rows, columns, message: 'Ejecución exitosa' }
       }
     } catch (err: any) {
       return { success: false, error: err.message }
@@ -185,7 +227,14 @@ ipcMain.handle('save-config', (_, { key, value }) => {
 ipcMain.handle('get-databases', async (_, { config, engine = 'mssql' }) => {
   if (engine === 'mssql') {
     try {
-      const pool = await sql.connect({ ...config, connectionTimeout: 10000, requestTimeout: 10000 })
+      const pool = await sql.connect({ 
+        ...config, 
+        connectionTimeout: 10000, 
+        requestTimeout: 10000,
+        options: {
+          trustServerCertificate: true
+        }
+      })
       const result = await pool.request().query("SELECT name FROM sys.databases WHERE name NOT IN ('master', 'tempdb', 'model', 'msdb')")
       await sql.close()
       return { success: true, databases: result.recordset.map(r => r.name) }
@@ -272,7 +321,14 @@ ipcMain.handle('get-snapshot-data', (event, id) => {
 ipcMain.handle('get-schema', async (_event, { config, engine = 'mssql' }) => {
   if (engine === 'mssql') {
     try {
-      const pool = await sql.connect({ ...config, options: { ...config.options, connectTimeout: 10000 } });
+      const pool = await sql.connect({ 
+        ...config, 
+        options: { 
+          ...config.options, 
+          connectTimeout: 10000,
+          trustServerCertificate: true
+        } 
+      });
       const result = await pool.request().query(`
         SELECT name FROM sys.tables
         UNION
@@ -329,6 +385,57 @@ ipcMain.handle('get-schema', async (_event, { config, engine = 'mssql' }) => {
   return { success: false, error: 'Engine no soportado' }
 })
 
+ipcMain.handle('get-columns', async (_, { config, table, engine = 'mssql' }) => {
+  if (engine === 'mssql') {
+    try {
+      const pool = await sql.connect({ 
+        ...config, 
+        connectionTimeout: 10000,
+        options: {
+          trustServerCertificate: true
+        }
+      });
+      const result = await pool.request().input('table', table).query(`
+        SELECT COLUMN_NAME as name, DATA_TYPE as type, CHARACTER_MAXIMUM_LENGTH as length
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_NAME = @table
+        ORDER BY ORDINAL_POSITION
+      `);
+      await sql.close();
+      return { success: true, columns: result.recordset };
+    } catch (err: any) { return { success: false, error: err.message }; }
+  } else if (engine === 'postgres' || engine === 'mysql') {
+    const isPG = engine === 'postgres';
+    let client: any;
+    try {
+      if (isPG) {
+        client = new pg.Client({
+          user: config.user,
+          host: config.server,
+          database: config.database,
+          password: config.password,
+          port: config.port || 5432
+        });
+        await client.connect();
+        const res = await client.query("SELECT column_name as name, data_type as type FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position", [table]);
+        return { success: true, columns: res.rows };
+      } else {
+        client = await mysql.createConnection({
+          host: config.server,
+          user: config.user,
+          password: config.password,
+          database: config.database,
+          port: config.port || 3306
+        });
+        const [rows]: any = await client.execute("SELECT COLUMN_NAME as name, DATA_TYPE as type FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ?", [table, config.database]);
+        return { success: true, columns: rows };
+      }
+    } catch (err: any) { return { success: false, error: err.message }; }
+    finally { if (client) isPG ? await client.end() : await client.end(); }
+  }
+  return { success: false, error: 'Engine no soportado' };
+});
+
 // File Management Handlers
 ipcMain.handle('open-file-dialog', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -371,6 +478,30 @@ ipcMain.handle('save-file-dialog', async (_, { content, filePath }) => {
   }
 });
 
-
-
+ipcMain.handle('check-connection', async (_, { host, port, engine }) => {
+  const defaultPorts: any = { mssql: 1433, postgres: 5432, mysql: 3306 };
+  const targetPort = port || defaultPorts[engine] || 1433;
+  
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(2500); // 2.5 seconds timeout
+    
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve({ online: true });
+    });
+    
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve({ online: false, error: 'Timeout' });
+    });
+    
+    socket.on('error', (err) => {
+      socket.destroy();
+      resolve({ online: false, error: err.message });
+    });
+    
+    socket.connect(targetPort, host);
+  });
+});
 

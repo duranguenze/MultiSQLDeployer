@@ -66,6 +66,10 @@ Para este proyecto, sugiero una combinación de **Clean Architecture** y el **Pa
 - [x] Sistema de Snapshots en ventanas nativas independientes.
 - [x] Barra de Herramientas Compacta (Clean Ribbon) con Tooltips y gestión de archivos.
 - [x] Soporte Multi-Motor: PostgreSQL y MySQL (Arquitectura preparada).
+- [x] Blindaje de Ejecución (Offline Guard): Sistema de pings y timeouts (5s) para evitar bloqueos por servidores inaccesibles.
+- [x] Generador ALTER SMART: Creación de scripts de migración de columnas con lógica de copia de datos (UPDATE) e idempotencia nativa.
+- [x] Soporte para Certificados Auto-firmados (SSL Trust): Conexiones seguras a servidores de desarrollo sin errores de TLS.
+- [x] Estabilidad de UI: Optimización de Monaco Editor (remeasureFonts) y blindaje de IPC contra estructuras circulares (Nuclear Cleanup).
 
 ---
 
@@ -75,4 +79,8 @@ Para este proyecto, sugiero una combinación de **Clean Architecture** y el **Pa
 - **Soporte Multi-Motor**: La arquitectura de IPC está lista para recibir drivers de `pg` (PostgreSQL) y `mysql2` (MySQL).
 - **Dashboard de Resultados**: Se implementó un `DataGrid` desacoplado de la barra de herramientas para evitar parpadeos y permitir scroll fluido con encabezados fijos.
 - **Ventanas de Snapshot**: Se optimizó la carga de snapshots usando `URLSearchParams` para evitar el "flash" de la UI principal antes de cargar los datos en ventanas nativas.
-- **Nueva Barra de Herramientas**: Se planea una barra superior estilo Windows (compacta) que centralice acciones del editor, ejecución y configuración mediante iconos con tooltips.
+- **Nueva Barra de Herramientas**: Se implementó una "Clean Ribbon" con tooltips, gestión de archivos (O/S/As) y control unificado de seguridad.
+- **Blindaje de Ejecución (Offline Guard)**: Se implementó una verificación de TCP (ping rápido) antes de cualquier operación de base de datos. Esto evita que la aplicación se "congele" durante 30 segundos si un servidor está caído o bloqueado por firewall.
+- **Generador ALTER SMART**: Se desarrolló una herramienta que no solo genera el `ALTER TABLE`, sino que permite elegir una "Columna Muestra" para autodefinir el tipo de dato y generar automáticamente el `UPDATE` para migrar los datos de la columna original a la nueva. Todo encapsulado en lógica de "IF NOT EXISTS" para MSSQL, Postgres y MySQL.
+- **Resiliencia de UI (Monaco + IPC)**: Se resolvieron problemas de desfase del cursor mediante el uso de `remeasureFonts()` y sincronización con el evento de carga de fuentes del sistema. Además, se implementó un `cleanForIpc` nuclear para evitar errores de clonación de objetos (como `Window` o `Circular References`) al enviar resultados pesados a través del puente de Electron.
+- **Soporte SSL Trust**: Se forzó la opción `trustServerCertificate: true` en todos los puntos de conexión de MSSQL para permitir el trabajo fluido en entornos de desarrollo con certificados auto-firmados.
