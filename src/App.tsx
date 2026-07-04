@@ -275,7 +275,7 @@ function App() {
   const [environments, setEnvironments] = useState<any[]>(ENVIRONMENTS_DEFAULT)
   const [serverStatus, setServerStatus] = useState<Record<string, 'online' | 'offline' | 'checking'>>({})
   const [showSettings, setShowSettings] = useState(false)
-  const [schemaTables, setSchemaTables] = useState<string[]>([])
+  const [schemaTables, setSchemaTables] = useState<Record<string, string[]>>({})
   const [isRefreshingSchema, setIsRefreshingSchema] = useState(false)
   const [selectedResultIndex, setSelectedResultIndex] = useState(0)
   const [consoleHeight, setConsoleHeight] = useState(300)
@@ -296,7 +296,13 @@ function App() {
       const savedEnvs = await getIpc().invoke('get-config', 'environments');
       if (savedEnvs) setEnvironments(savedEnvs);
       const cachedSchema = await getIpc().invoke('get-config', 'cachedSchema');
-      if (cachedSchema) setSchemaTables(cachedSchema);
+      if (cachedSchema) {
+        if (Array.isArray(cachedSchema)) {
+          setSchemaTables({});
+        } else {
+          setSchemaTables(cachedSchema);
+        }
+      }
 
       finalServers.forEach((s: any) => checkSrvConn(s));
     };
@@ -329,6 +335,7 @@ function App() {
     if (monacoRef.current) {
       const monaco = monacoRef.current;
       const provider = monaco.languages.registerCompletionItemProvider('sql', {
+        triggerCharacters: ['.'],
         provideCompletionItems: (model: any, position: any) => {
           const word = model.getWordUntilPosition(position);
           const range = {
@@ -338,22 +345,102 @@ function App() {
             endColumn: word.endColumn
           };
 
-          const tables = (window as any)._schemaTables || [];
-          const suggestions = tables.map((table: string) => ({
-            label: table,
-            kind: monaco.languages.CompletionItemKind.Field,
-            insertText: table,
-            range: range,
-            detail: 'Tabla de Base de Datos'
-          }));
+          const schema = (window as any)._schemaTables || {};
+          const tables = Object.keys(schema);
+          
+          // Obtener texto completo del editor para analizar
+          const fullText = model.getValue();
 
+          // Analizar el texto SQL para mapear alias a tablas reales (ej. "FROM it_usuario usrs")
+          const aliases: Record<string, string> = {};
+          const sqlKeywordsSet = new Set(['join', 'on', 'where', 'inner', 'left', 'right', 'full', 'cross', 'union', 'group', 'order', 'having', 'select', 'insert', 'update', 'delete', 'and', 'or', 'as', 'set', 'from']);
+          
+          tables.forEach(tableName => {
+            const escapedTableName = tableName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            // Regex que busca "FROM|JOIN [schema.]tabla [AS] alias"
+            const regex = new RegExp('\\b(?:FROM|JOIN)\\s+(?:\\w+\\.)?' + escapedTableName + '(?:\\s+AS)?\\s+(\\w+)\\b', 'gi');
+            let match;
+            while ((match = regex.exec(fullText)) !== null) {
+              const aliasCandidate = match[1].toLowerCase();
+              if (!sqlKeywordsSet.has(aliasCandidate)) {
+                aliases[aliasCandidate] = tableName;
+              }
+            }
+          });
+
+          // Verificar si el usuario escribió un punto "." para referenciar una tabla o alias (ej. "Usuarios." o "usrs.")
+          const lineContent = model.getLineContent(position.lineNumber);
+          const textBeforeCursor = lineContent.substring(0, position.column - 1);
+          const dotMatch = textBeforeCursor.match(/(\b\w+)\.$/);
+
+          const suggestions: any[] = [];
+
+          if (dotMatch) {
+            // Caso 1: Se escribió "Tabla." o "Alias." -> Sugerir únicamente las columnas de esa tabla
+            const tableOrAlias = dotMatch[1].toLowerCase();
+            const realTableName = aliases[tableOrAlias] || tables.find(t => t.toLowerCase() === tableOrAlias);
+            
+            if (realTableName) {
+              const columns = schema[realTableName] || [];
+              columns.forEach((column: string) => {
+                suggestions.push({
+                  label: column,
+                  kind: monaco.languages.CompletionItemKind.Property,
+                  insertText: column,
+                  range: range,
+                  detail: `Columna de ${realTableName}`,
+                  sortText: `0_${column}`
+                });
+              });
+            }
+            return { suggestions };
+          }
+
+          // Caso 2: Autocompletado general (sin haber presionado un punto recientemente)
+
+          // Filtrar tablas utilizadas en la consulta actual
+          const usedTables = tables.filter(tableName => {
+            const escapedTableName = tableName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            const regex = new RegExp('\\b' + escapedTableName + '\\b', 'i');
+            return regex.test(fullText);
+          });
+
+          // 1. Agregar columnas de las tablas detectadas (Máxima prioridad: sortText con prefijo "0_")
+          usedTables.forEach((table: string) => {
+            const columns = schema[table] || [];
+            columns.forEach((column: string) => {
+              suggestions.push({
+                label: column,
+                kind: monaco.languages.CompletionItemKind.Property,
+                insertText: column,
+                range: range,
+                detail: `Columna de ${table}`,
+                sortText: `0_${column}`
+              });
+            });
+          });
+
+          // 2. Agregar tablas a las sugerencias (Prioridad media: sortText con prefijo "1_")
+          tables.forEach((table: string) => {
+            suggestions.push({
+              label: table,
+              kind: monaco.languages.CompletionItemKind.Field,
+              insertText: table,
+              range: range,
+              detail: 'Tabla de Base de Datos',
+              sortText: `1_${table}`
+            });
+          });
+
+          // 3. Agregar palabras clave SQL (Menor prioridad: sortText con prefijo "2_")
           const keywords = ['SELECT', 'FROM', 'WHERE', 'UPDATE', 'DELETE', 'INSERT', 'INTO', 'VALUES', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'GROUP BY', 'ORDER BY', 'HAVING'];
           keywords.forEach(kw => {
             suggestions.push({
               label: kw,
               kind: monaco.languages.CompletionItemKind.Keyword,
               insertText: kw,
-              range: range
+              range: range,
+              sortText: `2_${kw}`
             });
           });
 
@@ -458,7 +545,7 @@ function App() {
     if (!srv) return;
     setIsRefreshingSchema(true);
     const res = await getIpc().invoke('get-schema', { config: { user: srv.user, password: srv.password, server: srv.host, database: dbName }, engine: srv.engine });
-    if (res.success) { setSchemaTables(res.tables); await getIpc().invoke('save-config', { key: 'cachedSchema', value: res.tables }); }
+    if (res.success) { setSchemaTables(res.schema); await getIpc().invoke('save-config', { key: 'cachedSchema', value: res.schema }); }
     setIsRefreshingSchema(false);
   }
 
@@ -672,7 +759,9 @@ function App() {
               padding:{top:10},
               scrollBeyondLastLine: false,
               formatOnPaste: true,
-              wordWrap: 'on'
+              wordWrap: 'on',
+              quickSuggestions: { other: true, comments: false, strings: false },
+              suggestOnTriggerCharacters: true
             }}
           />
         </div>

@@ -330,13 +330,29 @@ ipcMain.handle('get-schema', async (_event, { config, engine = 'mssql' }) => {
         } 
       });
       const result = await pool.request().query(`
-        SELECT name FROM sys.tables
-        UNION
-        SELECT name FROM sys.views
-        ORDER BY name ASC
+        SELECT 
+            t.name AS table_name,
+            c.name AS column_name
+        FROM sys.tables t
+        INNER JOIN sys.columns c ON t.object_id = c.object_id
+        UNION ALL
+        SELECT 
+            v.name AS table_name,
+            c.name AS column_name
+        FROM sys.views v
+        INNER JOIN sys.columns c ON v.object_id = c.object_id
+        ORDER BY table_name, column_name;
       `);
       await sql.close();
-      return { success: true, tables: result.recordset.map(r => r.name) };
+      
+      const schema: Record<string, string[]> = {};
+      result.recordset.forEach((row: any) => {
+        const tbl = row.table_name;
+        const col = row.column_name;
+        if (!schema[tbl]) schema[tbl] = [];
+        schema[tbl].push(col);
+      });
+      return { success: true, schema };
     } catch (err: any) {
       return { success: false, error: err.message };
     } finally {
@@ -353,12 +369,19 @@ ipcMain.handle('get-schema', async (_event, { config, engine = 'mssql' }) => {
     try {
       await client.connect()
       const result = await client.query(`
-        SELECT table_name as name 
-        FROM information_schema.tables 
+        SELECT table_name, column_name 
+        FROM information_schema.columns 
         WHERE table_schema = 'public'
-        ORDER BY table_name ASC
+        ORDER BY table_name, column_name
       `)
-      return { success: true, tables: result.rows.map(r => r.name) }
+      const schema: Record<string, string[]> = {};
+      result.rows.forEach((row: any) => {
+        const tbl = row.table_name;
+        const col = row.column_name;
+        if (!schema[tbl]) schema[tbl] = [];
+        schema[tbl].push(col);
+      });
+      return { success: true, schema };
     } catch (err: any) {
       return { success: false, error: err.message }
     } finally {
@@ -374,8 +397,21 @@ ipcMain.handle('get-schema', async (_event, { config, engine = 'mssql' }) => {
         database: config.database,
         port: config.port || 3306
       })
-      const [rows]: any = await connection.execute("SHOW TABLES")
-      return { success: true, tables: rows.map((r: any) => Object.values(r)[0]) }
+      const [rows]: any = await connection.execute(`
+        SELECT TABLE_NAME as table_name, COLUMN_NAME as column_name 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = ?
+        ORDER BY TABLE_NAME, COLUMN_NAME
+      `, [config.database])
+      
+      const schema: Record<string, string[]> = {};
+      rows.forEach((row: any) => {
+        const tbl = row.table_name;
+        const col = row.column_name;
+        if (!schema[tbl]) schema[tbl] = [];
+        schema[tbl].push(col);
+      });
+      return { success: true, schema };
     } catch (err: any) {
       return { success: false, error: err.message }
     } finally {

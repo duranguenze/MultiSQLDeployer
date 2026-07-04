@@ -70,6 +70,7 @@ Para este proyecto, sugiero una combinación de **Clean Architecture** y el **Pa
 - [x] Generador ALTER SMART: Creación de scripts de migración de columnas con lógica de copia de datos (UPDATE) e idempotencia nativa.
 - [x] Soporte para Certificados Auto-firmados (SSL Trust): Conexiones seguras a servidores de desarrollo sin errores de TLS.
 - [x] Estabilidad de UI: Optimización de Monaco Editor (remeasureFonts) y blindaje de IPC contra estructuras circulares (Nuclear Cleanup).
+- [x] Autocompletado contextual de columnas: Carga de columnas del esquema completo, ordenamiento prioritario y resolución dinámica de alias SQL (ej. 'alias.').
 
 ---
 
@@ -84,3 +85,5 @@ Para este proyecto, sugiero una combinación de **Clean Architecture** y el **Pa
 - **Generador ALTER SMART**: Se desarrolló una herramienta que no solo genera el `ALTER TABLE`, sino que permite elegir una "Columna Muestra" para autodefinir el tipo de dato y generar automáticamente el `UPDATE` para migrar los datos de la columna original a la nueva. Todo encapsulado en lógica de "IF NOT EXISTS" para MSSQL, Postgres y MySQL.
 - **Resiliencia de UI (Monaco + IPC)**: Se resolvieron problemas de desfase del cursor mediante el uso de `remeasureFonts()` y sincronización con el evento de carga de fuentes del sistema. Además, se implementó un `cleanForIpc` nuclear para evitar errores de clonación de objetos (como `Window` o `Circular References`) al enviar resultados pesados a través del puente de Electron.
 - **Soporte SSL Trust**: Se forzó la opción `trustServerCertificate: true` en todos los puntos de conexión de MSSQL para permitir el trabajo fluido en entornos de desarrollo con certificados auto-firmados.
+- **Autocompletado de Columnas y Alias**: Se extendió la consulta del esquema para recuperar tablas y columnas de forma agrupada (`Record<string, string[]>`) para MSSQL, PostgreSQL y MySQL. En el frontend, se configuró Monaco Editor con ordenación prioritaria (`sortText` con prefijos `0_` para columnas, `1_` para tablas y `2_` para palabras clave) y se integró resolución automática de alias locales (ej: `FROM tabla usrs` -> `usrs.`) mediante análisis de expresiones regulares en caliente en el editor, omitiendo palabras reservadas.
+
